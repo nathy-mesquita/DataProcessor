@@ -1,4 +1,5 @@
 ﻿using DataProcessor;
+using System.Runtime.Caching;
 using static System.Console;
 
 WriteLine($"Parsing command line options");
@@ -18,9 +19,11 @@ if (!Directory.Exists(directoryToWatch))
     ReadLine();
     return;
 }
+
+ProcessExistingFiles(directoryToWatch);
+
 WriteLine($"Watching directory {directoryToWatch} for chages");
 using var inputFileWatcher = new FileSystemWatcher(directoryToWatch);
-using var timer = new Timer(ProcessFiles, null, 0, 1000);
 
 inputFileWatcher.IncludeSubdirectories = false;
 inputFileWatcher.InternalBufferSize = 32_768; //32 KB
@@ -41,13 +44,13 @@ ReadLine();
 static void FileCreated(object sender, FileSystemEventArgs e)
 {
     WriteLine($"* File created: {e.Name} - type: {e.ChangeType}");
-    FilesToProcess.Files.TryAdd(e.FullPath, e.FullPath);
+    AddToCache(e.FullPath);
 }
 
 static void FileChanged(object sender, FileSystemEventArgs e)
 {
     WriteLine($"* File changed: {e.Name} - type: {e.ChangeType}");
-    FilesToProcess.Files.TryAdd(e.FullPath, e.FullPath);
+    AddToCache(e.FullPath);
 }
 
 static void FileDeleted(object sender, FileSystemEventArgs e)
@@ -65,15 +68,40 @@ static void FileError(object sender, ErrorEventArgs e)
     WriteLine($"ERROR: file system watching may no longer be active: {e.GetException()}");
 }
 
-//Método chamado por um timer 
-static void ProcessFiles(object stateInfo)
+static void AddToCache(string fullPath)
 {
-    foreach (var fileName in FilesToProcess.Files.Keys)
+    var item = new CacheItem(fullPath, fullPath);
+
+    var policy = new CacheItemPolicy
     {
-        if (FilesToProcess.Files.TryRemove(fileName, out _))
-        {
-            var fileProcessor = new FileProcessor(fileName);
-            fileProcessor.Process();
-        }
+        RemovedCallback = ProcessFile,
+        SlidingExpiration = TimeSpan.FromSeconds(2)
+    };
+
+    FilesToProcess.Files.Add(item, policy);
+
+}
+
+static void ProcessFile(CacheEntryRemovedArguments args)
+{
+    WriteLine($"* Cache item removed: {args.CacheItem.Key} because {args.RemovedReason}");
+    if (args.RemovedReason == CacheEntryRemovedReason.Expired)
+    {
+        var fileProcessor = new FileProcessor(args.CacheItem.Key);
+        fileProcessor.Process();
+    }
+    else
+    {
+        WriteLine($"WARNING: {args.CacheItem.Key} was removed unexpectedly and may");
+    }
+}
+
+static void ProcessExistingFiles(string inputDirectory)
+{
+    WriteLine($"Checking {inputDirectory} for existing files");
+    foreach (var filePath in Directory.EnumerateFiles(inputDirectory))
+    {
+        WriteLine($"  - Found {filePath}");
+        AddToCache(filePath);
     }
 }
